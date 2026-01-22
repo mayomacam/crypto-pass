@@ -20,6 +20,7 @@ ARGON2_TIME_COST = 3        # Iterations
 ARGON2_PARALLELISM = 4      # Threads (Cores)
 SALT_LENGTH = 32            # High entropy salt
 
+
 # Session Settings
 SESSION_TIMEOUT_MINUTES = 5
 SESSION_LIFETIME_HOURS = 24
@@ -59,3 +60,4 @@ COLOR_ACCENT = "#2ecc71"  # Emerald
 COLOR_SURFACE = "#242424"
 COLOR_TEXT = "#E0E0E0"
 COLOR_TEXT_DIM = "#888888"
+

@@ -6,7 +6,6 @@ import hashlib
 import json
 import keyring
 import wmi
-from pathlib import Path
 from typing import Optional, Any, Dict
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from core.secure_memory import zero_memory
@@ -18,6 +17,18 @@ class SessionManager:
     
     def __init__(self):
         self._hardware_id = self._get_hardware_id()
+        self._device_secret = self._get_or_create_device_secret()
+
+    def _get_or_create_device_secret(self) -> str:
+        try:
+            secret = keyring.get_password(self.SERVICE_NAME, "device_secret")
+            if secret:
+                return secret
+            secret = os.urandom(32).hex()
+            keyring.set_password(self.SERVICE_NAME, "device_secret", secret)
+            return secret
+        except Exception:
+            return os.urandom(32).hex()
 
     def _get_hardware_id(self) -> str:
         """Retrieves a unique hardware identifier (Machine GUID on Windows)."""
@@ -33,7 +44,8 @@ class SessionManager:
 
     def _derive_session_key(self, hardware_id: str) -> bytes:
         """Derives a key from the hardware ID for session encryption."""
-        return hashlib.sha256(hardware_id.encode()).digest()
+        combined = f"{hardware_id}:{self._device_secret}"
+        return hashlib.sha256(combined.encode()).digest()
 
     def save_session(self, master_key_hex: str, user_id: str = "default", pin_key: Optional[bytes] = None):
         """

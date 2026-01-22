@@ -5,7 +5,15 @@
 **Target:** BitMarrow Application
 
 ## Executive Summary
-The BitMarrow application employs strong cryptographic primitives (AES-256-GCM, Argon2id) and a robust "Defense in Depth" strategy with both full-database and field-level encryption. However, a critical vulnerability was identified where the database is decrypted to a temporary file on the disk during runtime, posing a significant data leakage risk.
+The BitMarrow application employs strong cryptographic primitives (AES-256-GCM, Argon2id) and a robust "Defense in Depth" strategy with both full-database and field-level encryption. A prior vulnerability involving temporary plaintext DB files was identified and resolved in v4.0.0.
+
+## v5.0.0 Update
+The following security improvements were implemented in the v5.0.0 release:
+- **Blob Storage**: Removed plaintext temp DB usage by switching to in-memory deserialize/serialize.
+- **Backup Restore**: Added safe ZIP extraction to prevent path traversal.
+- **Session Persistence**: Added a device secret stored in OS keyring to strengthen session key derivation.
+- **Backups**: Added PBKDF2-HMAC-SHA256 for backup key derivation and integrity verification workflow.
+- **Vault File Permissions**: Tightened file permissions during seal to avoid world-writable modes.
 
 ## Findings
 

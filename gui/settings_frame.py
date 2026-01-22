@@ -5,6 +5,7 @@ import hashlib
 import json
 import customtkinter as ctk
 import os
+import secrets
 from pathlib import Path
 from typing import Optional
 
@@ -178,17 +179,31 @@ class SettingsFrame(ctk.CTkFrame):
         ctk.CTkLabel(backup_container, text="Encrypted Backups", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=20, pady=(20, 5))
         ctk.CTkLabel(backup_container, text="Creates an encrypted archive of your vault using your current Migration Key.", text_color=COLOR_TEXT_DIM, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=20, pady=(0, 20))
         
-        ctk.CTkButton(backup_container, text="📦 Create Encrypted Backup (.cpback)", command=self._handle_create_backup, fg_color="#3498db", height=40).pack(padx=20, pady=(0, 20), fill="x")
+        ctk.CTkButton(backup_container, text="Create Encrypted Backup (.cpback)", command=self._handle_create_backup, fg_color="#3498db", height=40).pack(padx=20, pady=(0, 10), fill="x")
+        ctk.CTkButton(backup_container, text="Verify Backup", command=self._handle_verify_backup, fg_color="transparent", border_width=1, border_color="#555555", height=35).pack(padx=20, pady=(0, 10), fill="x")
+        ctk.CTkButton(backup_container, text="Restore Backup", command=self._handle_restore_backup, fg_color="transparent", border_width=1, border_color="#555555", height=35).pack(padx=20, pady=(0, 20), fill="x")
 
         # Migration History
         mig_container = ctk.CTkFrame(scroll, fg_color=COLOR_SURFACE, corner_radius=15)
         mig_container.pack(fill="x", padx=10, pady=10)
         
-        ctk.CTkLabel(mig_container, text="📜 Migration Audit Ledger", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=20, pady=(20, 5))
+        ctk.CTkLabel(mig_container, text="Migration Audit Ledger", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=20, pady=(20, 5))
         self.mig_list = ctk.CTkLabel(mig_container, text="No migration history found.", text_color=COLOR_TEXT_DIM, font=ctk.CTkFont(size=11), justify="left")
         self.mig_list.pack(anchor="w", padx=20, pady=(0, 20))
 
         ctk.CTkButton(mig_container, text="Generate Migration Transfer Key", command=self._handle_gen_migration, fg_color="#3498db").pack(pady=(0, 20))
+
+        audit_container = ctk.CTkFrame(scroll, fg_color=COLOR_SURFACE, corner_radius=15)
+        audit_container.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkLabel(audit_container, text="Security Event Logs", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=20, pady=(20, 5))
+        self.audit_text = ctk.CTkTextbox(audit_container, height=160, fg_color=COLOR_BG, border_color="#333333", border_width=1, font=ctk.CTkFont(size=11, family="Consolas"))
+        self.audit_text.pack(fill="x", padx=20, pady=(0, 10))
+        self.audit_text.configure(state="disabled")
+        ctk.CTkButton(audit_container, text="Refresh Logs", command=self._refresh_audit_logs, fg_color="transparent", border_width=1, border_color="#555555").pack(pady=(0, 20))
+
+        self.migration_info_label = ctk.CTkLabel(scroll, text="", text_color=COLOR_ACCENT)
+        self.migration_info_label.pack(pady=(0, 10))
 
     def _handle_save_paths(self):
         """Placeholder for path saving logic."""
@@ -255,10 +270,7 @@ class SettingsFrame(ctk.CTkFrame):
 
     def _handle_gen_migration(self):
         """Generates a high-entropy Transfer Key and stores its hash for later claiming."""
-        import string
-        import random
-        # Generate 12-char alphanumeric key
-        key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
+        key = secrets.token_hex(16).upper()
         key_hash = hashlib.sha256(key.encode()).hexdigest()
         
         try:
@@ -273,28 +285,69 @@ class SettingsFrame(ctk.CTkFrame):
             self.db.save_migration_key(key_hash, hwid, details)
             
             # Show the key to the user (crucial: only once)
-            self.info_label.configure(
-                text=f"🔑 TRANSFER KEY: {key}\nWrite this down! It is required to move your vault.", 
+            self.migration_info_label.configure(
+                text=f"TRANSFER KEY: {key}\nWrite this down! It is required to move your vault.",
                 text_color="#3498db"
             )
             self.refresh()
         except Exception as e:
-            self.info_label.configure(text=f"❌ Migration Init Error: {e}", text_color="#e74c3c")
+            self.migration_info_label.configure(text=f"Migration Init Error: {e}", text_color="#e74c3c")
 
     def _handle_create_backup(self):
         """Creates an encrypted zip of the vault data."""
-        self.info_label.configure(text="⏳ Preparing backup...", text_color=COLOR_ACCENT)
-        # To be implemented with Migration Key encryption
-        import threading
-        def run_backup():
-            try:
-                # Logic will go here
-                import time
-                time.sleep(1) # Simulate
-                self.app.after(0, lambda: self.info_label.configure(text="✅ Backup created in your data folder!", text_color=COLOR_ACCENT))
-            except Exception as e:
-                self.app.after(0, lambda: self.info_label.configure(text=f"❌ Backup failed: {e}", text_color="#e74c3c"))
-        threading.Thread(target=run_backup).start()
+        from tkinter import filedialog
+        output_path = filedialog.asksaveasfilename(
+            defaultextension=".cpback",
+            filetypes=[("Encrypted Backup", "*.cpback"), ("All files", "*.*")],
+            title="Save Encrypted Backup"
+        )
+        if not output_path:
+            return
+        self.migration_info_label.configure(text="Preparing backup...", text_color=COLOR_ACCENT)
+        try:
+            success = self.app._handle_create_backup(output_path)
+            if success:
+                self.migration_info_label.configure(text="Backup created successfully.", text_color=COLOR_ACCENT)
+            else:
+                self.migration_info_label.configure(text="Backup failed. Generate a migration key first.", text_color="#e74c3c")
+        except Exception as e:
+            self.migration_info_label.configure(text=f"Backup failed: {e}", text_color="#e74c3c")
+
+    def _handle_verify_backup(self):
+        from tkinter import filedialog
+        backup_path = filedialog.askopenfilename(
+            filetypes=[("Encrypted Backup", "*.cpback"), ("All files", "*.*")],
+            title="Verify Backup"
+        )
+        if not backup_path:
+            return
+        self.migration_info_label.configure(text="Verifying backup...", text_color=COLOR_ACCENT)
+        try:
+            success = self.app._handle_verify_backup(backup_path)
+            if success:
+                self.migration_info_label.configure(text="Backup verified successfully.", text_color=COLOR_ACCENT)
+            else:
+                self.migration_info_label.configure(text="Backup verification failed.", text_color="#e74c3c")
+        except Exception as e:
+            self.migration_info_label.configure(text=f"Verification failed: {e}", text_color="#e74c3c")
+
+    def _handle_restore_backup(self):
+        from tkinter import filedialog
+        backup_path = filedialog.askopenfilename(
+            filetypes=[("Encrypted Backup", "*.cpback"), ("All files", "*.*")],
+            title="Restore Backup"
+        )
+        if not backup_path:
+            return
+        self.migration_info_label.configure(text="Restoring backup...", text_color=COLOR_ACCENT)
+        try:
+            success = self.app._handle_restore_backup(backup_path)
+            if success:
+                self.migration_info_label.configure(text="Backup restored successfully.", text_color=COLOR_ACCENT)
+            else:
+                self.migration_info_label.configure(text="Backup restore failed.", text_color="#e74c3c")
+        except Exception as e:
+            self.migration_info_label.configure(text=f"Restore failed: {e}", text_color="#e74c3c")
 
     def refresh(self):
         """Updates the migration history list."""
@@ -310,5 +363,22 @@ class SettingsFrame(ctk.CTkFrame):
                 # row = (id, old_id, new_id, status, created, migrated)
                 text += f"{row[0]} | {row[1][:8]}... | {row[3]} | {row[4][:16]}\n"
             self.mig_list.configure(text=text)
+        except Exception:
+            pass
+
+        self._refresh_audit_logs()
+
+    def _refresh_audit_logs(self):
+        try:
+            rows = self.db.get_audit_logs()
+            self.audit_text.configure(state="normal")
+            self.audit_text.delete("1.0", "end")
+            if not rows:
+                self.audit_text.insert("1.0", "No audit events found.")
+            else:
+                for row in rows:
+                    line = f"{row[3]} | {row[0]} | {row[2]} | {row[1]}\n"
+                    self.audit_text.insert("end", line)
+            self.audit_text.configure(state="disabled")
         except Exception:
             pass

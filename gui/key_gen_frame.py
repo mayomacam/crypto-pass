@@ -2,9 +2,12 @@
 Key generator frame for cryptographic key generation.
 """
 import customtkinter as ctk
+from pathlib import Path
 from typing import Optional
 
 from generators.key_generator import KeyGenerator, KeyType, KeyResult
+from generators.password_generator import PasswordGenerator
+from gui.components.strength_meter import StrengthMeter
 from utils.clipboard import ClipboardManager
 
 
@@ -103,6 +106,54 @@ class KeyGenFrame(ctk.CTkFrame):
         self.x509_ed25519 = ctk.CTkCheckBox(self.x509_options, text="Modern Ed25519 Signature", fg_color=COLOR_ACCENT)
         self.x509_ed25519.select()
         self.x509_ed25519.pack(anchor="w", pady=10)
+
+        # Private key passphrase
+        self.passphrase_options = ctk.CTkFrame(self.options_container, fg_color="transparent")
+        self.protect_private_var = ctk.BooleanVar(value=False)
+        self.protect_private_chk = ctk.CTkCheckBox(
+            self.passphrase_options,
+            text="Protect private key with passphrase",
+            fg_color=COLOR_ACCENT,
+            command=self._toggle_passphrase_fields,
+            variable=self.protect_private_var
+        )
+        self.protect_private_chk.pack(anchor="w", pady=(5, 8))
+
+        self.passphrase_entry = ctk.CTkEntry(
+            self.passphrase_options,
+            width=260,
+            fg_color=COLOR_BG,
+            border_color="#333333",
+            show="*",
+            placeholder_text="Passphrase"
+        )
+        self.passphrase_entry.pack(anchor="w", pady=(0, 6))
+
+        self.passphrase_confirm_entry = ctk.CTkEntry(
+            self.passphrase_options,
+            width=260,
+            fg_color=COLOR_BG,
+            border_color="#333333",
+            show="*",
+            placeholder_text="Confirm passphrase"
+        )
+        self.passphrase_confirm_entry.pack(anchor="w")
+
+        self.show_passphrase_var = ctk.BooleanVar(value=False)
+        self.show_passphrase_chk = ctk.CTkCheckBox(
+            self.passphrase_options,
+            text="Show passphrase",
+            fg_color=COLOR_ACCENT,
+            command=self._toggle_passphrase_visibility,
+            variable=self.show_passphrase_var
+        )
+        self.show_passphrase_chk.pack(anchor="w", pady=(8, 0))
+
+        self.passphrase_strength = StrengthMeter(self.passphrase_options)
+        self.passphrase_strength.pack(fill="x", pady=(8, 0))
+
+        self.passphrase_entry.bind("<KeyRelease>", self._update_passphrase_strength)
+        self.passphrase_confirm_entry.bind("<KeyRelease>", self._update_passphrase_strength)
         
         self.generate_btn = ctk.CTkButton(
             content, text="Generate Cryptographic Key",
@@ -113,12 +164,20 @@ class KeyGenFrame(ctk.CTkFrame):
         self.generate_btn.pack(fill="x", pady=(20, 0))
 
         self.import_btn = ctk.CTkButton(
-            content, text="Import Certificate File",
+            content, text="Import Certificate",
             height=45, fg_color="transparent", border_width=1, border_color="#555555",
             text_color=COLOR_TEXT,
             command=self._import_certificate
         )
         self.import_btn.pack(fill="x", pady=(10, 0))
+
+        self.import_private_btn = ctk.CTkButton(
+            content, text="Import Private Key",
+            height=45, fg_color="transparent", border_width=1, border_color="#555555",
+            text_color=COLOR_TEXT,
+            command=self._import_private_key
+        )
+        self.import_private_btn.pack(fill="x", pady=(10, 0))
         
         self._on_type_change()
     
@@ -151,7 +210,7 @@ class KeyGenFrame(ctk.CTkFrame):
         self.public_label.pack(side="left")
         
         self.copy_public_btn = ctk.CTkButton(
-            public_header, text="📋 Copy", width=70, height=28,
+            public_header, text="Copy", width=70, height=28,
             fg_color=COLOR_ACCENT, text_color="black", font=ctk.CTkFont(size=11, weight="bold"),
             command=lambda: self._copy_key("public")
         )
@@ -169,14 +228,14 @@ class KeyGenFrame(ctk.CTkFrame):
         
         private_header = ctk.CTkFrame(self.private_frame, fg_color="transparent")
         private_header.pack(fill="x", pady=(15, 5))
-        ctk.CTkLabel(private_header, text="Private Secret", font=ctk.CTkFont(weight="bold", size=13), text_color=COLOR_TEXT_DIM).pack(side="left")
+        ctk.CTkLabel(private_header, text="Private Key", font=ctk.CTkFont(weight="bold", size=13), text_color=COLOR_TEXT_DIM).pack(side="left")
         
         btn_box = ctk.CTkFrame(private_header, fg_color="transparent")
         btn_box.pack(side="right")
 
         self.private_visible = False
         self.toggle_private_btn = ctk.CTkButton(
-            btn_box, text="👁️ Show", width=70, height=28,
+            btn_box, text="Show", width=70, height=28,
             fg_color="transparent", border_width=1, border_color="#555555",
             font=ctk.CTkFont(size=11),
             command=self._toggle_private_visibility
@@ -184,7 +243,7 @@ class KeyGenFrame(ctk.CTkFrame):
         self.toggle_private_btn.pack(side="left", padx=5)
 
         self.copy_private_btn = ctk.CTkButton(
-            btn_box, text="📋 Copy", width=70, height=28,
+            btn_box, text="Copy", width=70, height=28,
             fg_color="transparent", border_width=1, border_color="#555555",
             font=ctk.CTkFont(size=11),
             command=lambda: self._copy_key("private")
@@ -221,6 +280,7 @@ class KeyGenFrame(ctk.CTkFrame):
         self.rsa_options.pack_forget()
         self.hmac_options.pack_forget()
         self.x509_options.pack_forget()
+        self.passphrase_options.pack_forget()
         
         if key_type in ["RSA", "SSH-RSA"]:
             self.rsa_options.pack(fill="x")
@@ -228,6 +288,13 @@ class KeyGenFrame(ctk.CTkFrame):
             self.hmac_options.pack(fill="x")
         elif key_type == "X.509 Certificate":
             self.x509_options.pack(fill="x")
+
+        if self._supports_passphrase(key_type):
+            self.passphrase_options.pack(fill="x", pady=(5, 0))
+            self._toggle_passphrase_fields()
+        else:
+            self.protect_private_var.set(False)
+            self._toggle_passphrase_fields()
     
     def _generate(self):
         key_type_str = self.selected_type.get()
@@ -241,6 +308,12 @@ class KeyGenFrame(ctk.CTkFrame):
         elif key_type == KeyType.X509:
             kwargs['common_name'] = self.x509_cn.get()
             kwargs['use_ed25519'] = bool(self.x509_ed25519.get())
+
+        passphrase = self._get_passphrase()
+        if passphrase is False:
+            return
+        if passphrase:
+            kwargs['passphrase'] = passphrase
         
         try:
             self.current_key = self.generator.generate(key_type, **kwargs)
@@ -269,6 +342,32 @@ class KeyGenFrame(ctk.CTkFrame):
                 self._display_key()
             except Exception as e:
                 self.info_label.configure(text=f"Import Failed: {str(e)}", text_color="#e74c3c")
+
+    def _import_private_key(self):
+        from tkinter import filedialog
+        filepath = filedialog.askopenfilename(
+            filetypes=[("Private Keys", "*.pem *.key *.ppk"), ("All files", "*.*")],
+            title="Import Private Key"
+        )
+        if not filepath:
+            return
+
+        raw_data = Path(filepath).read_bytes()
+        try:
+            self.current_key = KeyGenerator.import_private_key(raw_data)
+            self._display_key()
+        except TypeError:
+            dialog = ctk.CTkInputDialog(text="Enter private key passphrase:", title="Private Key Passphrase")
+            passphrase = dialog.get_input()
+            if not passphrase:
+                return
+            try:
+                self.current_key = KeyGenerator.import_private_key(raw_data, passphrase=passphrase)
+                self._display_key()
+            except Exception as e:
+                self.info_label.configure(text=f"Import Failed: {str(e)}", text_color="#e74c3c")
+        except Exception as e:
+            self.info_label.configure(text=f"Import Failed: {str(e)}", text_color="#e74c3c")
     
     def _display_key(self):
         if not self.current_key: return
@@ -292,13 +391,13 @@ class KeyGenFrame(ctk.CTkFrame):
         
         self.private_frame.pack(fill="x")
         self.private_visible = False
-        self.toggle_private_btn.configure(text="👁️ Show")
+        self.toggle_private_btn.configure(text="Show")
         self._update_private_display()
         self.action_frame.pack(fill="x", pady=(20, 0))
 
     def _toggle_private_visibility(self):
         self.private_visible = not self.private_visible
-        self.toggle_private_btn.configure(text="👁️ Hide" if self.private_visible else "👁️ Show")
+        self.toggle_private_btn.configure(text="Hide" if self.private_visible else "Show")
         self._update_private_display()
 
     def _update_private_display(self):
@@ -323,8 +422,8 @@ class KeyGenFrame(ctk.CTkFrame):
         
         if text:
             ClipboardManager.copy(text)
-            btn.configure(text="✓ Copied")
-            self.after(2000, lambda: btn.configure(text="📋 Copy"))
+            btn.configure(text="Copied")
+            self.after(2000, lambda: btn.configure(text="Copy"))
     
     def _save_to_vault(self):
         if not self.current_key or not self.db: return
@@ -334,10 +433,9 @@ class KeyGenFrame(ctk.CTkFrame):
         
         if name:
             expiry = None
-            metadata = None
-            if self.current_key.key_type == KeyType.X509:
-                metadata = self.current_key.additional_info
-                expiry = metadata.get('expiry_date') if metadata else None
+            metadata = self.current_key.additional_info
+            if metadata and self.current_key.key_type == KeyType.X509:
+                expiry = metadata.get('expiry_date')
 
             self.db.add_crypto_key(
                 name=name,
@@ -362,5 +460,52 @@ class KeyGenFrame(ctk.CTkFrame):
         if filepath:
             base = filepath.rsplit('.', 1)[0]
             KeyGenerator.export_to_file(self.current_key, base)
-            self.export_btn.configure(text="✓ Files Saved")
+            self.export_btn.configure(text="Files Saved")
             self.after(2000, lambda: self.export_btn.configure(text="Download Files"))
+
+    def _supports_passphrase(self, key_type: str) -> bool:
+        return key_type in ["RSA", "Ed25519", "SSH-Ed25519", "SSH-RSA", "X.509 Certificate"]
+
+    def _toggle_passphrase_fields(self):
+        enabled = bool(self.protect_private_var.get())
+        state = "normal" if enabled else "disabled"
+        self.passphrase_entry.configure(state=state)
+        self.passphrase_confirm_entry.configure(state=state)
+        self.show_passphrase_chk.configure(state=state)
+        if not enabled:
+            self.passphrase_entry.delete(0, "end")
+            self.passphrase_confirm_entry.delete(0, "end")
+            self.show_passphrase_var.set(False)
+            self._toggle_passphrase_visibility()
+            self.passphrase_strength.update_strength(0, "Empty")
+
+    def _get_passphrase(self):
+        if not self.protect_private_var.get():
+            return None
+        if not self._supports_passphrase(self.selected_type.get()):
+            return None
+        passphrase = self.passphrase_entry.get()
+        confirm = self.passphrase_confirm_entry.get()
+        if not passphrase:
+            self.info_label.configure(text="Passphrase required when protection is enabled.", text_color="#e74c3c")
+            return False
+        if passphrase != confirm:
+            self.info_label.configure(text="Passphrase confirmation does not match.", text_color="#e74c3c")
+            return False
+        return passphrase
+
+    def _toggle_passphrase_visibility(self):
+        show = "" if self.show_passphrase_var.get() else "*"
+        self.passphrase_entry.configure(show=show)
+        self.passphrase_confirm_entry.configure(show=show)
+
+    def _update_passphrase_strength(self, event=None):
+        if not self.protect_private_var.get():
+            self.passphrase_strength.update_strength(0, "Empty")
+            return
+        passphrase = self.passphrase_entry.get()
+        if not passphrase:
+            self.passphrase_strength.update_strength(0, "Empty")
+            return
+        strength = PasswordGenerator.calculate_strength(passphrase)
+        self.passphrase_strength.update_strength(strength["score"], strength["strength"])

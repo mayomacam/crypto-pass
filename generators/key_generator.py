@@ -46,6 +46,11 @@ class KeyResult:
 
 class KeyGenerator:
     """Generates various types of cryptographic keys."""
+
+    def _resolve_encryption(self, passphrase: Optional[str]):
+        if passphrase:
+            return serialization.BestAvailableEncryption(passphrase.encode("utf-8"))
+        return serialization.NoEncryption()
     
     def generate(self, key_type: KeyType, **kwargs) -> KeyResult:
         """
@@ -75,7 +80,7 @@ class KeyGenerator:
         
         return generator(**kwargs)
     
-    def _generate_rsa(self, key_size: int = 4096) -> KeyResult:
+    def _generate_rsa(self, key_size: int = 4096, passphrase: Optional[str] = None) -> KeyResult:
         """
         Generate RSA key pair.
         
@@ -95,7 +100,7 @@ class KeyGenerator:
         private_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=self._resolve_encryption(passphrase)
         ).decode('utf-8')
         
         # Serialize public key
@@ -108,17 +113,18 @@ class KeyGenerator:
             key_type=KeyType.RSA,
             public_key=public_pem,
             private_key=private_pem,
-            key_size=key_size
+            key_size=key_size,
+            additional_info={"private_key_encrypted": bool(passphrase)}
         )
     
-    def _generate_ed25519(self) -> KeyResult:
+    def _generate_ed25519(self, passphrase: Optional[str] = None) -> KeyResult:
         """Generate Ed25519 key pair (256-bit, highly secure)."""
         private_key = ed25519.Ed25519PrivateKey.generate()
         
         private_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=self._resolve_encryption(passphrase)
         ).decode('utf-8')
         
         public_pem = private_key.public_key().public_bytes(
@@ -130,10 +136,11 @@ class KeyGenerator:
             key_type=KeyType.ED25519,
             public_key=public_pem,
             private_key=private_pem,
-            key_size=256
+            key_size=256,
+            additional_info={"private_key_encrypted": bool(passphrase)}
         )
     
-    def _generate_aes(self) -> KeyResult:
+    def _generate_aes(self, passphrase: Optional[str] = None) -> KeyResult:
         """Generate AES-256-GCM key."""
         key = AESGCM.generate_key(bit_length=256)
         key_b64 = base64.b64encode(key).decode('utf-8')
@@ -146,7 +153,7 @@ class KeyGenerator:
             additional_info={"format": "base64", "algorithm": "AES-256-GCM"}
         )
     
-    def _generate_ssh_ed25519(self) -> KeyResult:
+    def _generate_ssh_ed25519(self, passphrase: Optional[str] = None) -> KeyResult:
         """Generate SSH key pair using Ed25519."""
         private_key = ed25519.Ed25519PrivateKey.generate()
         
@@ -154,7 +161,7 @@ class KeyGenerator:
         private_ssh = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.OpenSSH,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=self._resolve_encryption(passphrase)
         ).decode('utf-8')
         
         public_ssh = private_key.public_key().public_bytes(
@@ -167,10 +174,13 @@ class KeyGenerator:
             public_key=public_ssh,
             private_key=private_ssh,
             key_size=256,
-            additional_info={"format": "OpenSSH"}
+            additional_info={
+                "format": "OpenSSH",
+                "private_key_encrypted": bool(passphrase)
+            }
         )
     
-    def _generate_ssh_rsa(self, key_size: int = 4096) -> KeyResult:
+    def _generate_ssh_rsa(self, key_size: int = 4096, passphrase: Optional[str] = None) -> KeyResult:
         """Generate SSH key pair using RSA-4096."""
         private_key = rsa.generate_private_key(
             public_exponent=65537,
@@ -181,7 +191,7 @@ class KeyGenerator:
         private_ssh = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.OpenSSH,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=self._resolve_encryption(passphrase)
         ).decode('utf-8')
         
         public_ssh = private_key.public_key().public_bytes(
@@ -194,12 +204,16 @@ class KeyGenerator:
             public_key=public_ssh,
             private_key=private_ssh,
             key_size=4096,
-            additional_info={"format": "OpenSSH"}
+            additional_info={
+                "format": "OpenSSH",
+                "private_key_encrypted": bool(passphrase)
+            }
         )
     
     def _generate_x509(self, common_name: str = "BitMarrow Self-Signed",
                        validity_days: int = 365,
-                       use_ed25519: bool = True) -> KeyResult:
+                       use_ed25519: bool = True,
+                       passphrase: Optional[str] = None) -> KeyResult:
         """
         Generate self-signed X.509 certificate.
         
@@ -242,7 +256,7 @@ class KeyGenerator:
         private_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=self._resolve_encryption(passphrase)
         ).decode('utf-8')
         
         return KeyResult(
@@ -255,8 +269,77 @@ class KeyGenerator:
                 "expiry_date": (datetime.utcnow() + timedelta(days=validity_days)).isoformat(),
                 "issuer": common_name,
                 "serial_number": cert.serial_number,
-                "algorithm": "Ed25519" if use_ed25519 else "RSA-4096"
+                "algorithm": "Ed25519" if use_ed25519 else "RSA-4096",
+                "private_key_encrypted": bool(passphrase)
             }
+        )
+
+    @staticmethod
+    def import_private_key(raw_data: bytes, passphrase: Optional[str] = None) -> KeyResult:
+        password = passphrase.encode("utf-8") if passphrase else None
+        is_ssh = b"BEGIN OPENSSH PRIVATE KEY" in raw_data
+
+        if is_ssh:
+            private_key = serialization.load_ssh_private_key(
+                raw_data,
+                password=password,
+                backend=default_backend()
+            )
+            if isinstance(private_key, rsa.RSAPrivateKey):
+                key_type = KeyType.SSH_RSA
+                key_size = private_key.key_size
+            elif isinstance(private_key, ed25519.Ed25519PrivateKey):
+                key_type = KeyType.SSH_ED25519
+                key_size = 256
+            else:
+                raise ValueError("Unsupported SSH private key type")
+
+            public_key = private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.OpenSSH,
+                format=serialization.PublicFormat.OpenSSH
+            ).decode("utf-8")
+            private_key_data = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.OpenSSH,
+                encryption_algorithm=serialization.BestAvailableEncryption(password) if password else serialization.NoEncryption()
+            ).decode("utf-8")
+            return KeyResult(
+                key_type=key_type,
+                public_key=public_key,
+                private_key=private_key_data,
+                key_size=key_size,
+                additional_info={"format": "OpenSSH", "private_key_encrypted": bool(passphrase)}
+            )
+
+        private_key = serialization.load_pem_private_key(
+            raw_data,
+            password=password,
+            backend=default_backend()
+        )
+        if isinstance(private_key, rsa.RSAPrivateKey):
+            key_type = KeyType.RSA
+            key_size = private_key.key_size
+        elif isinstance(private_key, ed25519.Ed25519PrivateKey):
+            key_type = KeyType.ED25519
+            key_size = 256
+        else:
+            raise ValueError("Unsupported PEM private key type")
+
+        public_key = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode("utf-8")
+        private_key_data = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.BestAvailableEncryption(password) if password else serialization.NoEncryption()
+        ).decode("utf-8")
+        return KeyResult(
+            key_type=key_type,
+            public_key=public_key,
+            private_key=private_key_data,
+            key_size=key_size,
+            additional_info={"format": "PEM", "private_key_encrypted": bool(passphrase)}
         )
 
     @staticmethod
@@ -294,7 +377,7 @@ class KeyGenerator:
         except Exception as e:
             raise ValueError(f"Failed to parse certificate: {str(e)}")
     
-    def _generate_hmac(self, hash_algorithm: str = "SHA-256") -> KeyResult:
+    def _generate_hmac(self, hash_algorithm: str = "SHA-256", passphrase: Optional[str] = None) -> KeyResult:
         """
         Generate HMAC key.
         
@@ -320,7 +403,7 @@ class KeyGenerator:
             additional_info={"hash_algorithm": hash_algorithm, "format": "base64"}
         )
     
-    def _generate_chacha20(self) -> KeyResult:
+    def _generate_chacha20(self, passphrase: Optional[str] = None) -> KeyResult:
         """Generate ChaCha20-Poly1305 key (256-bit)."""
         key = ChaCha20Poly1305.generate_key()
         key_b64 = base64.b64encode(key).decode('utf-8')

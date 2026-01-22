@@ -32,6 +32,8 @@ from gui.key_vault_frame import KeyVaultFrame
 from gui.stats_frame import StatsFrame
 from gui.notes_frame import NotesFrame
 from gui.settings_frame import SettingsFrame
+from gui.about_frame import AboutFrame
+from gui.help_frame import HelpFrame
 from utils.clipboard import ClipboardManager
 
 
@@ -84,7 +86,7 @@ class BitMarrowApp(ctk.CTk):
         
         # Dynamic Timeout Check
         timeout = SESSION_LIFETIME_HOURS # Default
-        try:
+        try: #todo: implement
              # We need to temporarily connect (unencrypted) to check public config?
              # No, master_config requires decryption? 
              # Wait, master_config is in the main DB which is ENCRYPTED. 
@@ -100,7 +102,7 @@ class BitMarrowApp(ctk.CTk):
              # Or just stick to the constant for the initial check?
              # OR: Allow the session to unlock, THEN check, and if expired, force logout.
              pass
-        except: pass
+        except: pass #todo: implement
         
         # Correct Approach:
         # We rely on the hardcoded max (24 default) for the initial gate.
@@ -268,6 +270,8 @@ class BitMarrowApp(ctk.CTk):
             
         # If mnemonic is valid, we can force-bind the hardware
         hwid = self.session_mgr.get_current_hwid()
+        self.session_mgr.bind_hardware(hwid)
+        self.session_mgr.save_session()
         # We also need to derive the master key from the mnemonic to verify it's the RIGHT mnemonic
         # But even if we don't have the master key yet, we can't unseal the DB.
         # So it's safe to just set the fingerprint and let the user try to unseal.
@@ -325,7 +329,7 @@ class BitMarrowApp(ctk.CTk):
                     # For now, let's assume if they have a PIN, persistent sessions are always PIN-gated
                     pin_config = self.db.get_pin_config()
                     pin_key = None
-                    if pin_config:
+                    if pin_config: #TODO: We need to handle this better
                         # This is tricky: we don't have the PIN here. 
                         # We might need to ask for it, or just use a default gating.
                         # User said: "start with pin (when session store on device)"
@@ -626,7 +630,9 @@ class BitMarrowApp(ctk.CTk):
             "key_vault": ("📜 Key Vault", KeyVaultFrame),
             "notes": ("📝 Notes", NotesFrame),
             "stats": ("📊 Stats", StatsFrame),
-            "settings": ("⚙️ Settings", SettingsFrame)
+            "settings": ("⚙️ Settings", SettingsFrame),
+            "about": ("ℹ️ About", AboutFrame),
+            "help": ("❓ Help", HelpFrame)
         }
 
         for key, (label, frame_cls) in tab_map.items():
@@ -635,6 +641,8 @@ class BitMarrowApp(ctk.CTk):
             else:
                 f = frame_cls(self.content_frame, self.db)
             self.frames[key] = f
+
+        
 
         # Auto-redirect to settings if security is incomplete
         initial_tab = "settings" if self.security_incomplete else "passwords"
@@ -712,24 +720,56 @@ class BitMarrowApp(ctk.CTk):
 
     def _handle_create_backup(self, output_path: str) -> bool:
         """Logic to create an encrypted backup using the Migration Key."""
+        enc_mgr = self._get_backup_encryption()
+        if not enc_mgr:
+            return False
+        return self.backup_mgr.create_backup(Path(output_path), enc_mgr)
+
+    def _handle_verify_backup(self, backup_path: str) -> bool:
+        enc_mgr = self._get_backup_encryption()
+        if not enc_mgr:
+            return False
+        return self.backup_mgr.verify_backup(Path(backup_path), enc_mgr)
+
+    def _handle_restore_backup(self, backup_path: str) -> bool:
+        enc_mgr = self._get_backup_encryption()
+        if not enc_mgr:
+            return False
+        return self.backup_mgr.restore_backup(Path(backup_path), DATA_DIR, enc_mgr)
+
+    def _get_backup_encryption(self) -> Optional[EncryptionManager]:
         key_hash = self.db.get_latest_migration_key_hash()
         if not key_hash:
-            return False
-            
-        # Derive a key from the migration key hash + hardware ID
+            return None
         hwid = self.session_mgr.get_current_hwid()
-        backup_key_source = f"{key_hash}{hwid}"
-        backup_key = hashlib.sha256(backup_key_source.encode()).digest()
-        
-        enc_mgr = EncryptionManager(bytearray(backup_key))
-        success = self.backup_mgr.create_backup(Path(output_path), enc_mgr)
-        return success
+        backup_key = hashlib.pbkdf2_hmac(
+            "sha256",
+            key_hash.encode(),
+            hwid.encode(),
+            200_000,
+            dklen=32
+        )
+        return EncryptionManager(bytearray(backup_key))
 
     def _update_storage_paths(self, data_dir: str, backup_dir: str):
         """Updates and moves storage locations (WIP)."""
         # User requested this feature. We will implement basic path tracking here.
         # For a full implementation, we'd need to move files and update config.py dynamically.
         pass
+
+    def help(self):
+        self._show_main_app()
+        self.sidebar.set_active("help")
+        self.frames["help"].grid(row=0, column=0, sticky="nsew")
+        self.frames["help"].show()
+        self._reset_session_timer()
+    
+    def about(self):
+        self._show_main_app()
+        self.sidebar.set_active("about")
+        self.frames["about"].grid(row=0, column=0, sticky="nsew")
+        self.frames["about"].show()
+        self._reset_session_timer()
 
     def _on_navigation_change(self, key: str):
         """Switch content frame based on sidebar selection."""
@@ -750,7 +790,9 @@ class BitMarrowApp(ctk.CTk):
                 "key_vault": "Key Vault",
                 "notes": "Markdown Notes",
                 "stats": "Statistics",
-                "settings": "Settings"
+                "settings": "Settings",
+                "about": "About",
+                "help": "Help"
             }
             self.header_title.configure(text=titles.get(key, "Dashboard"))
 

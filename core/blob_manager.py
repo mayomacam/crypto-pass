@@ -4,7 +4,6 @@ Secure blob storage for files and images using a secondary encrypted database.
 import sqlite3
 import os
 import hashlib
-from pathlib import Path
 from typing import Optional, Dict, Any
 
 from core.encryption import EncryptionManager
@@ -16,31 +15,24 @@ class BlobManager:
         self.db_path = blob_db_path
         self._encryption = encryption_manager
         self._conn: Optional[sqlite3.Connection] = None
-        self._temp_db_path: Optional[str] = None
         
         self.connect()
 
     def connect(self):
         """Standard connect logic similar to DatabaseManager."""
-        import tempfile
         if not self.db_path.exists():
-            # Initial create
-            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn = sqlite3.connect(":memory:")
+            self._conn.row_factory = sqlite3.Row
             self._init_tables()
             self._seal_db()
-            self._conn.close()
+            return
         
-        # Open sealed
         encrypted_data = self.db_path.read_bytes()
         decrypted_data = self._encryption.decrypt_bytes(encrypted_data)
-        
-        self._temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        self._temp_db.write(decrypted_data)
-        self._temp_db.close()
-        self._temp_db_path = self._temp_db.name
-        
-        self._conn = sqlite3.connect(self._temp_db_path)
+
+        self._conn = sqlite3.connect(":memory:")
         self._conn.row_factory = sqlite3.Row
+        self._conn.deserialize(decrypted_data)
         self._init_tables()
 
     def _init_tables(self):
@@ -57,19 +49,11 @@ class BlobManager:
         self._conn.commit()
 
     def _seal_db(self):
-        """Re-encrypt the temp DB back to disk."""
+        """Re-encrypt the in-memory DB back to disk."""
         if not self._conn: return
-        self._conn.close()
-        
-        temp_path = Path(self._temp_db_path)
-        raw_data = temp_path.read_bytes()
+        raw_data = self._conn.serialize()
         encrypted_data = self._encryption.encrypt_bytes(raw_data)
-        
         self.db_path.write_bytes(encrypted_data)
-        
-        # Re-open
-        self._conn = sqlite3.connect(self._temp_db_path)
-        self._conn.row_factory = sqlite3.Row
 
     def store_blob(self, name: str, mime_type: str, data: bytes) -> str:
         """Encrypts and stores a blob. Returns blob_id."""
@@ -110,5 +94,3 @@ class BlobManager:
     def close(self):
         if self._conn:
             self._conn.close()
-        if self._temp_db_path and os.path.exists(self._temp_db_path):
-            os.unlink(self._temp_db_path)

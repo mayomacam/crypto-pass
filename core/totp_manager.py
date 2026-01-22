@@ -16,7 +16,7 @@ class TOTPManager:
         return pyotp.random_base32()
     
     @staticmethod
-    def get_provisioning_uri(secret: str, username: str, issuer: str = "CryptoPass") -> str:
+    def get_provisioning_uri(secret: str, username: str, issuer: str = "BitMarrow") -> str:
         """Returns the provisioning URI for a QR code."""
         return pyotp.totp.TOTP(secret).provisioning_uri(name=username, issuer_name=issuer)
     

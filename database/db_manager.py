@@ -1,8 +1,10 @@
 import sqlite3
 import os
+import time
 import json
 import keyring
 import secrets
+import hashlib
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -11,7 +13,7 @@ from config import DATA_DIR, DB_FILE
 from core.encryption import EncryptionManager
 from utils.audit_logger import AuditLogger, EVENT_DB_MIGRATION, EVENT_LOGIN_SUCCESS
 
-SERVICE_VAULT = "CryptoPass-Vault"
+SERVICE_VAULT = "BitMarrow-Vault"
 
 
 class DatabaseManager:
@@ -119,7 +121,19 @@ class DatabaseManager:
             start_time = datetime.now()
             temp_target = DB_FILE.with_suffix(".new")
             temp_target.write_bytes(encrypted)
-            temp_target.replace(DB_FILE)
+
+            for attempt in range(3):
+                try:
+                    try:
+                        os.chmod(temp_target, 0o600)
+                    except OSError:
+                        pass
+                    temp_target.replace(DB_FILE)
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.1)
             
         except Exception as e:
             print(f"Failed to seal database: {e}")
@@ -148,7 +162,6 @@ class DatabaseManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        self._migrate_tables()
         
         # Standard password entries
         cursor.execute('''
@@ -260,6 +273,19 @@ class DatabaseManager:
             if col not in columns:
                 try:
                     cursor.execute(f"ALTER TABLE master_config ADD COLUMN {col} {col_type}")
+                except sqlite3.OperationalError:
+                    pass
+
+        cursor.execute("PRAGMA table_info(migration_history)")
+        mig_columns = [row[1] for row in cursor.fetchall()]
+        mig_needed = {
+            "transfer_key_hash": "TEXT",
+            "migrated_at": "TIMESTAMP"
+        }
+        for col, col_type in mig_needed.items():
+            if col not in mig_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE migration_history ADD COLUMN {col} {col_type}")
                 except sqlite3.OperationalError:
                     pass
         
@@ -435,7 +461,7 @@ class DatabaseManager:
         # Wait, if we change the master password, we need to unwrap current master key first.
         # Actually, if we change the MASTER password, the master key ITSELF might change 
         # OR we just change the password that derives it.
-        # In CryptoPass, the Master Password DERIVES the Master Key.
+        # In BitMarrow, the Master Password DERIVES the Master Key.
         # So changing the Master Password = CHANGING the Master Key.
         
         # This requires re-encrypting everything.
@@ -501,11 +527,12 @@ class DatabaseManager:
 
     def finalize_migration(self, key: str, new_device_id: str):
         """Completes the migration and binds the vault to the new device."""
+        key_hash = hashlib.sha256(key.encode()).hexdigest()
         self._conn.execute('''
             UPDATE migration_history 
-            SET status = 'COMPLETED', new_device_id = ?, completed_at = CURRENT_TIMESTAMP
-            WHERE key_hash = ?
-        ''', (new_device_id, hashlib.sha256(key.encode()).hexdigest()))
+            SET status = 'COMPLETED', new_device_id = ?, migrated_at = CURRENT_TIMESTAMP
+            WHERE transfer_key_hash = ?
+        ''', (new_device_id, key_hash))
         
         # Store local fingerprint
         vault_id = self.get_vault_id()
@@ -528,7 +555,21 @@ class DatabaseManager:
         return None
 
     # ============== Password Operations ==============
-    
+
+    def add_password(self, title: str, username: str, password: str,
+                     url: str = "", notes: str = "", category: str = "") -> int:
+        cursor = self._conn.cursor()
+        cursor.execute('''
+            INSERT INTO passwords (title, username, password, url, notes, category)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            self._encrypt(title),
+            self._encrypt(username),
+            self._encrypt(password),
+            self._encrypt(url),
+            self._encrypt(notes),
+            category
+        ))
         self._conn.commit()
         entry_id = cursor.lastrowid
         if hasattr(self, '_audit') and self._audit:
@@ -685,6 +726,10 @@ class DatabaseManager:
         self._conn.execute('DELETE FROM crypto_keys WHERE id = ?', (key_id,))
         self._conn.commit()
 
+    def update_crypto_key_notes(self, key_id: int, notes: str):
+        self._conn.execute('UPDATE crypto_keys SET notes = ? WHERE id = ?', (self._encrypt(notes), key_id))
+        self._conn.commit()
+
     def get_password_stats(self) -> Dict[str, Any]:
         passwords = self.get_all_passwords()
         total = len(passwords)
@@ -706,6 +751,13 @@ class DatabaseManager:
         """Fetches all unique category names from the vault."""
         cursor = self._conn.execute('SELECT DISTINCT category FROM passwords WHERE category IS NOT NULL AND category != ""')
         return [row[0] for row in cursor.fetchall()]
+
+    def get_audit_logs(self, limit: int = 50) -> List[sqlite3.Row]:
+        cursor = self._conn.execute(
+            'SELECT event_type, details, status, timestamp FROM audit_logs ORDER BY timestamp DESC LIMIT ?',
+            (limit,)
+        )
+        return cursor.fetchall()
 
     # ============== Markdown Note Operations ==============
 
